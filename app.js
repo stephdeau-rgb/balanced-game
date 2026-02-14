@@ -32,6 +32,18 @@
     URL.revokeObjectURL(url);
   }
 
+  function safeId(str) {
+    return String(str || "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  }
+
+  function uniqueWeaponId(base) {
+    const ids = new Set(state.data.weapons.map(w => w.id));
+    let id = base;
+    let i = 2;
+    while (ids.has(id)) { id = `${base}_${i++}`; }
+    return id;
+  }
+
   // ---------- example data ----------
   const EXAMPLE = {
     config: { enableDoubling: false, enableCrit: false, critMultiplier: 3 },
@@ -62,6 +74,10 @@
   // ---------- state ----------
   const state = {
     data: deepClone(EXAMPLE),
+
+    // baseline = snapshot “d’origine” du JSON chargé (sert pour Reset classe)
+    baseline: deepClone(EXAMPLE),
+
     ui: {
       tab: "main",
       enableDoubling: false,
@@ -74,8 +90,15 @@
 
       mainSelectedClassId: null,
       mainWeaponId: "iron_sword",
+
+      weaponCloneOnTune: true, // V2.2
+      // par classe, on mémorise l’arme “préférée” pour cette session de tuning
+      classPreferredWeapon: {}, // { [classId]: weaponId }
+      // mapping pour savoir si l’arme est une copie (utile pour UI)
+      weaponClonedFrom: {}, // { [weaponId]: originalWeaponId }
     },
-    derived: { exportGame: null, micro: null, errors: [] }
+
+    derived: { exportGame: null }
   };
 
   // ---------- access ----------
@@ -84,8 +107,8 @@
   const getTerrain = (id) => state.data.terrain.find(t => t.id === id) || null;
   const getUnit = (id) => state.data.units.find(u => u.id === id) || null;
 
-  function unitStats(unit) {
-    const cls = getClass(unit.classId);
+  function unitStats(unit, useData = state.data) {
+    const cls = useData.classes.find(c => c.id === unit.classId);
     if (!cls) return null;
     const base = cls.baseStats || {};
     const o = unit.statsOverride || {};
@@ -114,6 +137,7 @@
     return aStats.spd >= dStats.spd + 4 ? 2 : 1;
   }
 
+  // ---------- combat (pure-ish) ----------
   function simulateAttack(attackerUnit, defenderUnit, defenderTerrainId) {
     const aStats = unitStats(attackerUnit);
     const dStatsBase = unitStats(defenderUnit);
@@ -195,17 +219,84 @@
     return wrap;
   }
 
-  // ---------- Principal: compute vs standard ----------
+  // ---------- standard / pools ----------
   function standardUnit() {
     const u = getUnit(state.ui.duelDefenderId);
     return u || state.data.units.find(x => x.side === "enemy") || state.data.units[0] || null;
   }
 
+  function allyClassIds() {
+    const ids = new Set(state.data.units.filter(u => u.side === "player").map(u => u.classId));
+    return Array.from(ids).filter(id => getClass(id));
+  }
+
+  function enemyRepresentatives() {
+    // 1 unité par classe ennemie (la première rencontrée)
+    const map = new Map(); // classId -> unit
+    for (const u of state.data.units) {
+      if (u.side !== "enemy") continue;
+      if (!map.has(u.classId)) map.set(u.classId, u);
+    }
+    return Array.from(map.values());
+  }
+
+  // ---------- V2.2: weapon clone on tune ----------
+  function ensureWeaponForClass(classId, weaponId) {
+    // si on a déjà une arme préférée pour cette classe, on la force
+    const pref = state.ui.classPreferredWeapon[classId];
+    if (pref && getWeapon(pref)) return pref;
+
+    // sinon, on garde weaponId tel quel
+    return weaponId;
+  }
+
+  function cloneWeaponForClassIfNeeded(classId, currentWeaponId) {
+    if (!state.ui.weaponCloneOnTune) return currentWeaponId;
+
+    // si déjà une copie dédiée, on garde
+    const pref = state.ui.classPreferredWeapon[classId];
+    if (pref && getWeapon(pref)) return pref;
+
+    const original = getWeapon(currentWeaponId);
+    if (!original) return currentWeaponId;
+
+    const base = uniqueWeaponId(`${safeId(original.id)}_tuned_${safeId(classId)}`);
+    const copy = deepClone(original);
+    copy.id = base;
+    copy.name = `${original.name} (tuned ${classId})`;
+
+    state.data.weapons.push(copy);
+    state.ui.classPreferredWeapon[classId] = copy.id;
+    state.ui.weaponClonedFrom[copy.id] = original.id;
+
+    return copy.id;
+  }
+
+  // ---------- evaluation ----------
   function tempUnitFromClass(classId, weaponId) {
     return { id: "tmp", name: "TMP", classId, weaponId, side: "player", level: 1, position: { x: 0, y: 0 } };
   }
 
-  function evaluateMain(classId, weaponId) {
+  function verdictFromTTK(ttk) {
+    if (ttk >= 2 && ttk <= 3) return "ok";
+    if (ttk >= 1.5 && ttk <= 4) return "warn";
+    return "fail";
+  }
+
+  function verdictFromHit(hit) {
+    if (hit >= 0.7 && hit <= 0.9) return "ok";
+    if (hit >= 0.6 && hit <= 0.95) return "warn";
+    return "fail";
+  }
+
+  function overallVerdict(v1, v2) {
+    // "fail" domine, sinon "warn", sinon "ok"
+    if (v1 === "fail" || v2 === "fail") return "fail";
+    if (v1 === "warn" || v2 === "warn") return "warn";
+    return "ok";
+  }
+
+  function evaluateVsStandard(classId, weaponId) {
     const std = standardUnit();
     if (!std) return { error: "Aucune unité standard dispo." };
 
@@ -216,43 +307,94 @@
     const stdHp = unitStats(std)?.hp ?? 1;
     const ttk = TTK(stdHp, sim.expectedDamage);
 
-    // règles simples de verdict
-    const hit = sim.hitChance;
-    const exp = sim.expectedDamage;
-    const dmg = sim.dmg;
+    const vHit = verdictFromHit(sim.hitChance);
+    const vTTK = verdictFromTTK(ttk);
+    const vExp = sim.expectedDamage > 0 ? "ok" : "fail";
+    const vDmg = sim.dmg > 0 ? "ok" : "fail";
 
-    const vHit = hit >= 0.7 && hit <= 0.9 ? "ok" : (hit >= 0.6 && hit <= 0.95 ? "warn" : "fail");
-    const vTTK = (ttk >= 2 && ttk <= 3) ? "ok" : (ttk >= 1.5 && ttk <= 4 ? "warn" : "fail");
-    const vExp = exp > 0 ? "ok" : "fail";
-    const vDmg = dmg > 0 ? "ok" : "fail";
-
-    // break alerts
     const breaks = [];
-    if (dmg === 0) breaks.push({ level: "fail", text: "Dégâts = 0 → unité inutile sur ce standard." });
-    if (hit < 0.5) breaks.push({ level: "warn", text: "Hit < 50% → frustration (trop d’échecs)." });
-    if (ttk < 1.2 && exp > 0) breaks.push({ level: "warn", text: "One-shot probable → trop punitif." });
+    if (sim.dmg === 0) breaks.push({ level: "fail", text: "Dégâts = 0 → tu ne progresses pas sur ce standard." });
+    if (sim.hitChance < 0.5) breaks.push({ level: "warn", text: "Hit < 50% → frustrant (trop d’échecs)." });
+    if (ttk < 1.2 && sim.expectedDamage > 0) breaks.push({ level: "warn", text: "One-shot probable → trop punitif." });
     if (ttk > 4) breaks.push({ level: "warn", text: "TTK > 4 → combats trop longs (ennui)." });
     if (!breaks.length) breaks.push({ level: "ok", text: "Pas d’alerte majeure détectée." });
 
-    // recos simples
     const recos = [];
-    if (dmg === 0) recos.push({ level: "fail", text: "Action: baisse DEF/MDEF standard (ou terrain), ou augmente ATK/MATK/Might." });
-    if (hit < 0.7) recos.push({ level: "warn", text: "Action: augmente Hit de l’arme (+5 à +10) ou baisse Avoid du terrain." });
-    if (ttk > 3) recos.push({ level: "warn", text: "Action: +1 Might (arme) ou +1 ATK/MATK (classe), ou -1 DEF/MDEF standard." });
-    if (ttk < 2) recos.push({ level: "warn", text: "Action: +HP/+DEF standard, ou baisse Might / ATK/MATK." });
-    if (!recos.length) recos.push({ level: "ok", text: "Rien à changer pour ce standard (selon tes seuils)." });
+    if (sim.dmg === 0) recos.push({ level: "fail", text: "Baisse DEF/MDEF standard (ou terrain), ou augmente ATK/MATK/Might." });
+    if (sim.hitChance < 0.7) recos.push({ level: "warn", text: "Augmente Hit arme (+5 à +10) ou baisse Avoid terrain." });
+    if (ttk > 3) recos.push({ level: "warn", text: "+1 Might / +1 ATK(MATK) ou -1 DEF(MDEF) standard." });
+    if (ttk < 2) recos.push({ level: "warn", text: "Augmente HP/DEF standard, ou baisse Might / ATK(MATK)." });
+    if (!recos.length) recos.push({ level: "ok", text: "RAS sur ce standard (selon tes seuils)." });
 
     return { sim, std, stdHp, ttk, vHit, vTTK, vExp, vDmg, breaks, recos };
   }
 
-  // ---------- render tabs ----------
+  function evaluateVsEnemies(classId, weaponId) {
+    const reps = enemyRepresentatives();
+    const rows = [];
+
+    for (const enemy of reps) {
+      const attacker = tempUnitFromClass(classId, weaponId);
+      const sim = simulateAttack(attacker, enemy, state.ui.duelDefTerrainId);
+      if (!sim) continue;
+
+      const hp = unitStats(enemy)?.hp ?? 1;
+      const ttk = TTK(hp, sim.expectedDamage);
+
+      const vHit = verdictFromHit(sim.hitChance);
+      const vTTK = verdictFromTTK(ttk);
+      const v = overallVerdict(vHit, vTTK);
+
+      rows.push({
+        enemyName: enemy.name,
+        enemyClassId: enemy.classId,
+        hit: sim.hitChance,
+        dmg: sim.dmg,
+        exp: sim.expectedDamage,
+        ttk,
+        verdict: v,
+      });
+    }
+
+    // résumé global simple
+    const hits = rows.map(r => r.hit);
+    const ttks = rows.map(r => r.ttk).filter(Number.isFinite);
+    const exps = rows.map(r => r.exp);
+
+    const avg = (arr) => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0;
+    const min = (arr) => arr.length ? Math.min(...arr) : 0;
+    const max = (arr) => arr.length ? Math.max(...arr) : 0;
+
+    const summary = {
+      count: rows.length,
+      hitAvg: avg(hits),
+      hitMin: min(hits),
+      hitMax: max(hits),
+      ttkAvg: avg(ttks),
+      ttkMin: min(ttks),
+      ttkMax: max(ttks),
+      expAvg: avg(exps),
+      expMin: min(exps),
+      expMax: max(exps),
+    };
+
+    // verdict global (simple)
+    const globalVerdict =
+      (summary.count === 0) ? "fail"
+      : (summary.hitAvg >= 0.65 && summary.hitAvg <= 0.92 && summary.ttkAvg >= 1.8 && summary.ttkAvg <= 3.6) ? "ok"
+      : "warn";
+
+    return { rows, summary, globalVerdict };
+  }
+
+  // ---------- tabs ----------
   function setTab(tab) {
     state.ui.tab = tab;
     $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     $$(".tabpane").forEach(p => p.classList.toggle("active", p.id === `tab-${tab}`));
   }
 
-  // ---------- render selects ----------
+  // ---------- selects ----------
   function renderDuelSelects() {
     const units = state.data.units.map(u => ({
       value: u.id,
@@ -278,7 +420,7 @@
     fill($("#duel-defender-terrain"), terrains, state.ui.duelDefTerrainId);
   }
 
-  // ---------- render duels ----------
+  // ---------- duels ----------
   function renderDuels() {
     const root = $("#duel-results");
     const recos = $("#micro-recos");
@@ -303,12 +445,15 @@
     const defHp = unitStats(def)?.hp ?? 1;
     const ttk = TTK(defHp, sim.expectedDamage);
 
-    root.appendChild(indicatorRow("Hit", `${round0(sim.hitChance*100)}%`, sim.hitChance < 0.5 ? "warn" : "ok", "Fiabilité. Trop bas = frustration."));
-    root.appendChild(indicatorRow("Dégâts", `${sim.dmg}`, sim.dmg === 0 ? "fail" : "ok", "Si 0 → ça ne marche pas."));
-    root.appendChild(indicatorRow("Dégâts attendus", `${round2(sim.expectedDamage)}`, sim.expectedDamage <= 0 ? "fail" : "ok", "Rythme réel: hit × dégâts × attaques."));
-    root.appendChild(indicatorRow("TTK", `${Number.isFinite(ttk)? round2(ttk):"∞"}`, ttk>3 ? "warn":"ok", "Tempo. Vise ~2–3 sur standard."));
+    root.appendChild(indicatorRow("Hit", `${round0(sim.hitChance*100)}%`, sim.hitChance < 0.5 ? "warn" : "ok",
+      "Fiabilité. Trop bas = frustration."));
+    root.appendChild(indicatorRow("Dégâts (si ça touche)", `${sim.dmg}`, sim.dmg === 0 ? "fail" : "ok",
+      "Si 0 → ça ne marche pas."));
+    root.appendChild(indicatorRow("Dégâts attendus", `${round2(sim.expectedDamage)}`, sim.expectedDamage <= 0 ? "fail" : "ok",
+      "Rythme réel: hit × dégâts × attaques."));
+    root.appendChild(indicatorRow("TTK", `${Number.isFinite(ttk)? round2(ttk):"∞"}`, ttk>3 ? "warn":"ok",
+      "Tempo. Vise ~2–3 sur standard."));
 
-    // micro recos
     const list = [];
     if (sim.dmg === 0) list.push({ level:"fail", text:"Baisse DEF/MDEF standard (ou terrain) ou augmente Might/ATK/MATK." });
     if (sim.hitChance < 0.7) list.push({ level:"warn", text:"Augmente Hit arme (+5 à +10) ou baisse Avoid terrain." });
@@ -318,18 +463,14 @@
     for (const r of list) {
       const d = document.createElement("div");
       d.className = `badge ${r.level}`;
-      d.textContent = (r.level==="fail"?"❌ ":"⚠️ ") + r.text;
-      if (r.level==="ok") d.textContent = "✅ " + r.text;
+      d.textContent = (r.level==="fail"?"❌ ":"⚠️ ");
+      if (r.level==="ok") d.textContent = "✅ ";
+      d.textContent += r.text;
       recos.appendChild(d);
     }
   }
 
-  // ---------- render Principal ----------
-  function allyClassIds() {
-    const ids = new Set(state.data.units.filter(u => u.side === "player").map(u => u.classId));
-    return Array.from(ids).filter(id => getClass(id));
-  }
-
+  // ---------- Principal ----------
   function renderMainList() {
     const root = $("#ally-class-list");
     if (!root) return;
@@ -340,7 +481,6 @@
       return;
     }
 
-    // select default
     if (!state.ui.mainSelectedClassId || !getClass(state.ui.mainSelectedClassId)) {
       state.ui.mainSelectedClassId = ids[0];
     }
@@ -356,6 +496,9 @@
       `;
       el.addEventListener("click", () => {
         state.ui.mainSelectedClassId = id;
+        // si on avait déjà une arme préférée pour cette classe, la sélectionner automatiquement
+        const pref = state.ui.classPreferredWeapon[id];
+        if (pref && getWeapon(pref)) state.ui.mainWeaponId = pref;
         renderAll();
       });
       root.appendChild(el);
@@ -379,7 +522,19 @@
     if (empty) empty.style.display = "none";
     if (panel) panel.style.display = "flex";
 
-    // weapon select
+    // toggle clone weapon
+    const tClone = $("#toggle-weapon-clone");
+    if (tClone) {
+      tClone.checked = !!state.ui.weaponCloneOnTune;
+      tClone.onchange = (e) => {
+        state.ui.weaponCloneOnTune = e.target.checked;
+        renderAll();
+      };
+    }
+
+    // weapon select (respect preferred weapon)
+    state.ui.mainWeaponId = ensureWeaponForClass(c.id, state.ui.mainWeaponId);
+
     const weaponSel = $("#main-weapon-select");
     if (weaponSel) {
       weaponSel.innerHTML = "";
@@ -392,6 +547,7 @@
       }
       weaponSel.onchange = (e) => {
         state.ui.mainWeaponId = e.target.value;
+        state.ui.classPreferredWeapon[c.id] = state.ui.mainWeaponId;
         renderAll();
       };
     }
@@ -401,6 +557,14 @@
     const dmgType = $("#main-dmg-type");
     if (dmgType) {
       dmgType.textContent = w ? (w.type === "magic" ? "Magique (MATK vs MDEF)" : "Physique (ATK vs DEF)") : "—";
+    }
+
+    // weapon note (cloned or not)
+    const note = $("#main-weapon-note");
+    if (note) {
+      const from = state.ui.weaponClonedFrom[state.ui.mainWeaponId];
+      note.textContent = from ? `Copie (depuis ${from})` : "Original (global)";
+      note.className = "badge " + (from ? "warn" : "ok");
     }
 
     // sliders: class stats
@@ -424,60 +588,76 @@
       }
     }
 
-    // sliders: weapon
+    // sliders: weapon (V2.2 clone on first change)
     const wRoot = $("#main-weapon-sliders");
-    if (wRoot && w) {
+    if (wRoot) {
       wRoot.innerHTML = "";
-      wRoot.appendChild(sliderRow("Might", -2, 12, 1, n(w.might, 0), (val) => { w.might = val; recomputeAndRender(); }));
-      wRoot.appendChild(sliderRow("Hit", 40, 100, 1, n(w.hit, 0), (val) => { w.hit = val; recomputeAndRender(); }));
-      wRoot.appendChild(sliderRow("Crit", 0, 30, 1, n(w.crit, 0), (val) => { w.crit = val; recomputeAndRender(); }));
+      if (!w) {
+        wRoot.innerHTML = `<div class="badge fail">❌ Arme introuvable</div>`;
+      } else {
+        const onWeaponChange = (mutator) => {
+          // si clone activé, on clone au premier tweak
+          const newId = cloneWeaponForClassIfNeeded(c.id, state.ui.mainWeaponId);
+          if (newId !== state.ui.mainWeaponId) {
+            state.ui.mainWeaponId = newId;
+            state.ui.classPreferredWeapon[c.id] = newId;
+          }
+          const weapon = getWeapon(state.ui.mainWeaponId);
+          mutator(weapon);
+          recomputeAndRender();
+        };
+
+        wRoot.appendChild(sliderRow("Might", -2, 12, 1, n(w.might, 0), (val) => onWeaponChange((weapon) => { weapon.might = val; })));
+        wRoot.appendChild(sliderRow("Hit", 40, 100, 1, n(w.hit, 0), (val) => onWeaponChange((weapon) => { weapon.hit = val; })));
+        wRoot.appendChild(sliderRow("Crit", 0, 30, 1, n(w.crit, 0), (val) => onWeaponChange((weapon) => { weapon.crit = val; })));
+      }
     }
 
-    // indicators
+    // indicators + recos
     const indicators = $("#main-indicators");
     const alerts = $("#main-break-alerts");
     const recos = $("#main-recos");
     if (!indicators || !alerts || !recos) return;
 
-    const evalRes = evaluateMain(c.id, state.ui.mainWeaponId);
+    const stdRes = evaluateVsStandard(c.id, state.ui.mainWeaponId);
     indicators.innerHTML = "";
     alerts.innerHTML = "";
     recos.innerHTML = "";
 
-    if (evalRes.error) {
-      indicators.innerHTML = `<div class="badge fail">❌ ${evalRes.error}</div>`;
+    if (stdRes.error) {
+      indicators.innerHTML = `<div class="badge fail">❌ ${stdRes.error}</div>`;
       return;
     }
 
-    const sim = evalRes.sim;
-    const ttk = evalRes.ttk;
+    const sim = stdRes.sim;
+    const ttk = stdRes.ttk;
 
     indicators.appendChild(indicatorRow(
       "Hit",
       `${round0(sim.hitChance*100)}%`,
-      evalRes.vHit,
-      "Pourquoi: fiabilité. Trop bas → frustration."
+      stdRes.vHit,
+      "Pourquoi: si c’est trop bas, le joueur rate trop souvent → frustration."
     ));
     indicators.appendChild(indicatorRow(
       "Dégâts attendus",
       `${round2(sim.expectedDamage)}`,
-      evalRes.vExp,
-      "Pourquoi: rythme réel (hit × dmg × attaques)."
+      stdRes.vExp,
+      "Pourquoi: c’est le vrai rythme (Hit × Dégâts × nombre d’attaques)."
     ));
     indicators.appendChild(indicatorRow(
       "TTK",
       `${Number.isFinite(ttk)? round2(ttk):"∞"}`,
-      evalRes.vTTK,
-      "Pourquoi: tempo. Vise ~2–3 sur le standard."
+      stdRes.vTTK,
+      "Pourquoi: le tempo. Trop long = ennui, trop court = trop punitif."
     ));
     indicators.appendChild(indicatorRow(
       "Dégâts (si ça touche)",
       `${sim.dmg}`,
-      evalRes.vDmg,
-      "Pourquoi: si 0 → tu ne peux jamais progresser."
+      stdRes.vDmg,
+      "Pourquoi: si 0 → tu bloques la progression."
     ));
 
-    for (const b of evalRes.breaks) {
+    for (const b of stdRes.breaks) {
       const d = document.createElement("div");
       d.className = `badge ${b.level}`;
       d.textContent = (b.level==="fail"?"❌ ":"⚠️ ");
@@ -486,7 +666,11 @@
       alerts.appendChild(d);
     }
 
-    for (const r of evalRes.recos) {
+    // V2.2: comparaison vs ennemis
+    renderMainVsEnemies(c.id, state.ui.mainWeaponId);
+
+    // Recos = mélange standard + global
+    for (const r of stdRes.recos) {
       const d = document.createElement("div");
       d.className = `badge ${r.level}`;
       d.textContent = (r.level==="fail"?"❌ ":"⚠️ ");
@@ -494,9 +678,73 @@
       d.textContent += r.text;
       recos.appendChild(d);
     }
+
+    // petite reco “global”
+    const vs = evaluateVsEnemies(c.id, state.ui.mainWeaponId);
+    if (vs.count === 0) {
+      const d = document.createElement("div");
+      d.className = "badge fail";
+      d.textContent = "❌ Pas d’ennemis dans units[] → impossible de faire la comparaison globale.";
+      recos.appendChild(d);
+    } else if (vs.globalVerdict === "warn") {
+      const d = document.createElement("div");
+      d.className = "badge warn";
+      d.textContent = "⚠️ Global: certains ennemis sont trop faciles ou trop durs. Regarde la table (TTK/HIT).";
+      recos.appendChild(d);
+    } else if (vs.globalVerdict === "ok") {
+      const d = document.createElement("div");
+      d.className = "badge ok";
+      d.textContent = "✅ Global: la classe reste cohérente contre l’ensemble des classes ennemies (selon seuils).";
+      recos.appendChild(d);
+    }
   }
 
-  // ---------- render data ----------
+  function renderMainVsEnemies(classId, weaponId) {
+    const table = $("#main-vs-table");
+    const tbody = table?.querySelector("tbody");
+    const summaryRoot = $("#main-vs-summary");
+    if (!tbody || !summaryRoot) return;
+
+    const { rows, summary, globalVerdict } = evaluateVsEnemies(classId, weaponId);
+
+    // summary chips
+    summaryRoot.innerHTML = "";
+    if (!rows.length) {
+      summaryRoot.appendChild(htmlChip("fail", "Aucun ennemi", "Ajoute des unités enemy dans units[]."));
+    } else {
+      summaryRoot.appendChild(htmlChip(globalVerdict, "Verdict global", globalVerdict === "ok" ? "Plutôt équilibré." : "À surveiller."));
+      summaryRoot.appendChild(htmlChip("ok", "Hit moyen", `${round0(summary.hitAvg*100)}% (min ${round0(summary.hitMin*100)} / max ${round0(summary.hitMax*100)})`));
+      summaryRoot.appendChild(htmlChip("ok", "TTK moyen", `${round2(summary.ttkAvg)} (min ${round2(summary.ttkMin)} / max ${round2(summary.ttkMax)})`));
+      summaryRoot.appendChild(htmlChip("ok", "Dmg attendu moyen", `${round2(summary.expAvg)} (min ${round2(summary.expMin)} / max ${round2(summary.expMax)})`));
+    }
+
+    // table rows
+    tbody.innerHTML = "";
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      const v = r.verdict;
+      const verdictText = v === "ok" ? "OK" : v === "warn" ? "Warning" : "Fail";
+      const verdictBadge = badge(v, verdictText);
+
+      tr.innerHTML = `
+        <td><b>${r.enemyName}</b> <span class="hint">(${r.enemyClassId})</span></td>
+        <td>${round0(r.hit*100)}%</td>
+        <td>${r.dmg}</td>
+        <td>${round2(r.exp)}</td>
+        <td>${Number.isFinite(r.ttk) ? round2(r.ttk) : "∞"}</td>
+        <td>${verdictBadge}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+
+  function htmlChip(level, title, desc) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = badge(level, `<b>${title}:</b> ${desc}`);
+    return wrap.firstElementChild;
+  }
+
+  // ---------- data tab ----------
   function renderData() {
     const editor = $("#json-editor");
     const status = $("#json-status");
@@ -567,6 +815,24 @@
       try {
         const parsed = JSON.parse(raw);
         state.data = parsed;
+
+        // V2.2: baseline reset = ce JSON devient la référence “d’origine”
+        state.baseline = deepClone(parsed);
+
+        // reset session tuning maps
+        state.ui.classPreferredWeapon = {};
+        state.ui.weaponClonedFrom = {};
+
+        // best effort defaults
+        if (!getUnit(state.ui.duelDefenderId)) {
+          const e = state.data.units.find(u => u.side === "enemy") || state.data.units[0];
+          if (e) state.ui.duelDefenderId = e.id;
+        }
+        if (!getUnit(state.ui.duelAttackerId)) {
+          const p = state.data.units.find(u => u.side === "player") || state.data.units[0];
+          if (p) state.ui.duelAttackerId = p.id;
+        }
+
         recomputeAndRender();
       } catch (err) {
         const st = $("#json-status");
@@ -579,10 +845,16 @@
 
     $("#btn-reset")?.addEventListener("click", () => {
       state.data = deepClone(EXAMPLE);
+      state.baseline = deepClone(EXAMPLE);
+
       state.ui.duelAttackerId = "p1";
       state.ui.duelDefenderId = "e1";
       state.ui.mainSelectedClassId = null;
       state.ui.mainWeaponId = "iron_sword";
+
+      state.ui.classPreferredWeapon = {};
+      state.ui.weaponClonedFrom = {};
+
       recomputeAndRender();
     });
 
@@ -601,20 +873,48 @@
     });
   }
 
+  function initResetClassButton() {
+    $("#btn-reset-class")?.addEventListener("click", () => {
+      const classId = state.ui.mainSelectedClassId;
+      if (!classId) return;
+
+      // restore class baseStats from baseline (if exists)
+      const baseC = state.baseline.classes.find(c => c.id === classId);
+      const liveC = state.data.classes.find(c => c.id === classId);
+
+      if (baseC && liveC) {
+        liveC.baseStats = deepClone(baseC.baseStats);
+      }
+
+      // optional: reset preferred weapon mapping for that class (session)
+      delete state.ui.classPreferredWeapon[classId];
+
+      // keep current weapon selection if it still exists, else fallback
+      if (!getWeapon(state.ui.mainWeaponId)) {
+        state.ui.mainWeaponId = (state.data.weapons[0]?.id) || "";
+      }
+
+      recomputeAndRender();
+    });
+  }
+
   // ---------- boot ----------
   function boot() {
     initTabs();
     initHeaderToggles();
     initDuelsEvents();
     initDataButtons();
+    initResetClassButton();
 
     // init ui from data
     state.ui.enableDoubling = !!state.data.config.enableDoubling;
     state.ui.enableCrit = !!state.data.config.enableCrit;
 
+    // default: clone weapon on tuning = true
+    state.ui.weaponCloneOnTune = true;
+
     renderAll();
   }
 
-  // IMPORTANT: wait DOM
   window.addEventListener("DOMContentLoaded", boot);
 })();
