@@ -1,1 +1,336 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FE-like Balance Lab (offline)</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">⚖️</div>
+      <div>
+        <div class="title">FE-like Balance Lab</div>
+        <div class="subtitle">Outil offline (statique) — édition + simulation + checklist + export JSON</div>
+      </div>
+    </div>
 
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="data">Données</button>
+      <button class="tab" data-tab="duels">Duels (Micro)</button>
+      <button class="tab" data-tab="stage">Stage (Macro)</button>
+      <button class="tab" data-tab="checklist">Checklist / Validation</button>
+      <button class="tab" data-tab="tuning">Tuning</button>
+    </nav>
+  </header>
+
+  <main class="container">
+
+    <!-- Mini doc -->
+    <section class="panel doc">
+      <h2>Utilisation rapide</h2>
+      <ul>
+        <li><b>Données</b> : édite le JSON interne dans la zone, puis clique <b>Valider / Parser</b>. Les formulaires sont une vue/édition “assistée”.</li>
+        <li><b>Référentiel</b> : dans <b>Duels</b>, choisis l’<b>ennemi standard</b> (défenseur). Les métriques/checklist se basent dessus.</li>
+        <li><b>Export</b> : <b>Copier</b> ou <b>Télécharger</b> le JSON “jeu” (format compatible projet).</li>
+        <li><b>Tuning</b> : applique des deltas globaux (mights armes, DEF/MDEF ennemis, HP stage) + toggle “doubling” (SPD).</li>
+        <li><b>Offline</b> : aucun backend, aucune dépendance externe. Tout est en mémoire (pense à exporter pour sauvegarder).</li>
+      </ul>
+    </section>
+
+    <!-- TAB: Données -->
+    <section class="panel tabpane active" id="tab-data">
+      <div class="grid two">
+        <div class="card">
+          <div class="card-header">
+            <h3>JSON interne (éditeur)</h3>
+            <div class="row gap">
+              <button id="btn-validate" class="btn primary">Valider / Parser</button>
+              <button id="btn-reset" class="btn">Réinitialiser (exemple)</button>
+            </div>
+          </div>
+          <textarea id="json-editor" class="textarea mono" spellcheck="false"></textarea>
+          <div class="hint" id="json-status"></div>
+
+          <div class="row gap wrap mt8">
+            <button id="btn-copy-editor" class="btn">Copier JSON (éditeur)</button>
+            <button id="btn-download-editor" class="btn">Télécharger JSON (éditeur)</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Export JSON (format jeu)</h3>
+            <div class="row gap">
+              <button id="btn-copy-game" class="btn primary">Copier JSON (jeu)</button>
+              <button id="btn-download-game" class="btn">Télécharger JSON (jeu)</button>
+            </div>
+          </div>
+          <pre id="export-preview" class="pre mono"></pre>
+
+          <div class="card-header mt12">
+            <h3>Notes de design</h3>
+          </div>
+          <textarea id="design-notes" class="textarea" placeholder="Décisions d’équilibrage, TODO, hypothèses, etc."></textarea>
+          <div class="hint">Ces notes sont dans le JSON interne (champ <code>designNotes</code>).</div>
+        </div>
+      </div>
+
+      <div class="grid three mt12">
+        <div class="card">
+          <div class="card-header">
+            <h3>Classes</h3>
+            <button class="btn small" id="btn-add-class">+ Ajouter</button>
+          </div>
+          <div id="classes-form" class="stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Armes</h3>
+            <button class="btn small" id="btn-add-weapon">+ Ajouter</button>
+          </div>
+          <div id="weapons-form" class="stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Terrains</h3>
+            <button class="btn small" id="btn-add-terrain">+ Ajouter</button>
+          </div>
+          <div id="terrain-form" class="stack"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: Duels -->
+    <section class="panel tabpane" id="tab-duels">
+      <div class="grid two">
+        <div class="card">
+          <div class="card-header">
+            <h3>Choix duel</h3>
+          </div>
+
+          <div class="grid two">
+            <div>
+              <label class="label">Attaquant</label>
+              <select id="duel-attacker" class="input"></select>
+
+              <label class="label mt8">Terrain attaquant</label>
+              <select id="duel-attacker-terrain" class="input"></select>
+            </div>
+
+            <div>
+              <label class="label">Défenseur (ennemi standard)</label>
+              <select id="duel-defender" class="input"></select>
+
+              <label class="label mt8">Terrain défenseur</label>
+              <select id="duel-defender-terrain" class="input"></select>
+            </div>
+          </div>
+
+          <div class="row gap wrap mt12">
+            <label class="pill">
+              <input type="checkbox" id="toggle-doubling" />
+              Doubling (SPD)
+            </label>
+            <label class="pill">
+              <input type="checkbox" id="toggle-crit" />
+              Crit (optionnel)
+            </label>
+          </div>
+
+          <div class="hint mt8">
+            Le <b>défenseur</b> est le référentiel “ennemi standard” utilisé par la checklist et certaines métriques.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Résultats</h3>
+          </div>
+          <div id="duel-results" class="stack"></div>
+        </div>
+      </div>
+
+      <div class="card mt12">
+        <div class="card-header">
+          <h3>Comparatif : toutes classes vs ennemi standard</h3>
+          <div class="hint">On instancie chaque classe avec une arme “par défaut” (ou la première arme compatible), puis on calcule expectedDamage / TTK.</div>
+        </div>
+        <div class="tablewrap">
+          <table class="table" id="table-compare">
+            <thead>
+              <tr>
+                <th>Classe</th>
+                <th>Arme</th>
+                <th>Hit%</th>
+                <th>Dmg</th>
+                <th>Attaques</th>
+                <th>Exp.Dmg</th>
+                <th>TTK</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card mt12">
+        <div class="card-header">
+          <h3>Recommandations (auto)</h3>
+        </div>
+        <div id="micro-recos" class="stack"></div>
+      </div>
+    </section>
+
+    <!-- TAB: Stage -->
+    <section class="panel tabpane" id="tab-stage">
+      <div class="grid two">
+        <div class="card">
+          <div class="card-header">
+            <h3>Stage chargé</h3>
+            <div class="row gap">
+              <select id="stage-select" class="input"></select>
+              <button id="btn-stage-reload" class="btn">Recharger</button>
+            </div>
+          </div>
+
+          <div id="stage-summary" class="stack"></div>
+
+          <div class="card-header mt12">
+            <h3>Simulation macro (simple)</h3>
+          </div>
+          <div class="hint">
+            Pas de pathfinding : on estime les “danger zones” via distance Manhattan + range d’arme, puis on approx TTK moyen.
+          </div>
+
+          <div class="row gap wrap mt8">
+            <label class="label">Rayon danger (cases)</label>
+            <input id="macro-radius" type="number" class="input" min="1" max="20" value="6" />
+            <button id="btn-macro-run" class="btn primary">Calculer</button>
+          </div>
+
+          <div id="macro-results" class="stack mt8"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Vue grille (indicative)</h3>
+            <div class="hint">Affichage minimal : terrains + positions unités (P/E). Pas un éditeur de map complet.</div>
+          </div>
+          <div id="stage-grid" class="gridview mono"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: Checklist -->
+    <section class="panel tabpane" id="tab-checklist">
+      <div class="grid two">
+        <div class="card">
+          <div class="card-header">
+            <h3>Checklist</h3>
+            <button id="btn-checklist-reset" class="btn">Reset défaut</button>
+          </div>
+          <div class="hint">Chaque item calcule une valeur mesurée à partir du référentiel (ennemi standard) et du set de classes.</div>
+          <div id="checklist-items" class="stack mt8"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Recommandations (global)</h3>
+          </div>
+          <div id="global-recos" class="stack"></div>
+
+          <div class="card-header mt12">
+            <h3>JSON checklist (modifiable)</h3>
+          </div>
+          <textarea id="checklist-editor" class="textarea mono" spellcheck="false"></textarea>
+          <div class="row gap wrap mt8">
+            <button id="btn-checklist-apply" class="btn primary">Appliquer checklist</button>
+            <button id="btn-checklist-copy" class="btn">Copier</button>
+          </div>
+          <div class="hint" id="checklist-status"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: Tuning -->
+    <section class="panel tabpane" id="tab-tuning">
+      <div class="grid two">
+        <div class="card">
+          <div class="card-header">
+            <h3>Sliders globaux</h3>
+          </div>
+
+          <div class="field">
+            <label class="label">Δ Might sur armes (filtre type)</label>
+            <div class="row gap">
+              <select id="tuning-weapon-type" class="input">
+                <option value="all">Toutes</option>
+                <option value="physical">Physical</option>
+                <option value="magic">Magic</option>
+                <option value="heal">Heal</option>
+              </select>
+              <input id="tuning-might" type="range" min="-3" max="3" value="0" />
+              <div class="kbd" id="tuning-might-val">0</div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="label">Δ DEF/MDEF sur ennemis (filtre classe)</label>
+            <div class="row gap">
+              <select id="tuning-enemy-class" class="input"></select>
+              <input id="tuning-def" type="range" min="-3" max="3" value="0" />
+              <div class="kbd" id="tuning-def-val">0</div>
+              <input id="tuning-mdef" type="range" min="-3" max="3" value="0" />
+              <div class="kbd" id="tuning-mdef-val">0</div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="label">Δ HP global stage (unités du stage sélectionné)</label>
+            <div class="row gap">
+              <input id="tuning-hp" type="range" min="-5" max="10" value="0" />
+              <div class="kbd" id="tuning-hp-val">0</div>
+            </div>
+          </div>
+
+          <div class="row gap wrap mt12">
+            <label class="pill">
+              <input type="checkbox" id="tuning-toggle-doubling" />
+              Doubling (SPD) global
+            </label>
+            <label class="pill">
+              <input type="checkbox" id="tuning-toggle-crit" />
+              Crit global (optionnel)
+            </label>
+          </div>
+
+          <div class="row gap wrap mt12">
+            <button id="btn-tuning-apply" class="btn primary">Appliquer</button>
+            <button id="btn-tuning-reset" class="btn">Reset sliders</button>
+          </div>
+
+          <div class="hint mt8">Les deltas modifient directement le JSON interne (pense à exporter).</div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Log changements</h3>
+          </div>
+          <pre id="tuning-log" class="pre mono"></pre>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="hint">FE-like Balance Lab — Vanilla HTML/CSS/JS — Offline</div>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
