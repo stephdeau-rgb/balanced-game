@@ -3,34 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FE-like Balance Lab — V3</title>
+  <title>FE-like Balance Lab — V4</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <!--
-  MINI DOC (V3)
-  1) Duels: choisis ton STANDARD (Défenseur). Ça règle aussi les terrains par défaut.
-  2) Principal:
-     - Clique une classe alliée
-     - Ajuste sliders
-     - Lis 3 blocs:
-       A) Indicateurs vs Standard (rapide)
-       B) Vs TOUTES unités ennemies (réel)
-       C) Défense (ennemis → toi) = tankiness
-  3) Général:
-     - Compare toutes les classes alliées (pour détecter OP / inutile).
-  4) Option "Dupliquer arme lors du tuning":
-     - Activée: dès que tu touches l’arme, on crée une copie dédiée à la classe.
-  5) Données:
-     - Import/Valider JSON puis Export jeu (copier).
+  V4: Tous indicateurs + graph utilité (par personnage/classe)
   -->
-
   <header class="topbar">
     <div class="brand">
       <div class="logo">⚖️</div>
       <div>
         <div class="title">FE-like Balance Lab</div>
-        <div class="subtitle">Outil statique offline — V3 (micro + global + défense)</div>
+        <div class="subtitle">Outil statique offline — V4 (tous indicateurs + graph utilité)</div>
       </div>
     </div>
 
@@ -45,7 +30,7 @@
       </label>
       <div class="sep"></div>
       <div class="hint">
-        Astuce: fixe un <b>ennemi standard</b> dans <b>Duels</b> pour une référence cohérente.
+        Astuce: fixe un <b>ennemi standard</b> dans <b>Duels</b> pour un repère stable.
       </div>
     </div>
   </header>
@@ -58,7 +43,6 @@
       <button type="button" class="tab" data-tab="data">Données</button>
     </nav>
 
-    <!-- PRINCIPAL -->
     <section id="tab-main" class="tabpane active">
       <div class="panel">
         <div class="panel-head">
@@ -70,7 +54,6 @@
         </div>
 
         <div class="grid two">
-          <!-- Liste classes alliées -->
           <div class="card">
             <div class="card-head">
               <h3>Classes alliées</h3>
@@ -82,7 +65,6 @@
             </div>
           </div>
 
-          <!-- Détails classe -->
           <div class="card">
             <div class="card-head">
               <div>
@@ -98,7 +80,6 @@
 
             <div id="main-class-panel" class="stack" style="display:none;">
               <div class="grid two">
-                <!-- Réglages -->
                 <div class="card">
                   <div class="card-head">
                     <h3>Réglages</h3>
@@ -145,7 +126,6 @@
                   <div id="main-weapon-sliders" class="stack mt8"></div>
                 </div>
 
-                <!-- Indicateurs -->
                 <div class="card">
                   <div class="card-head">
                     <h3>Indicateurs (vs Standard)</h3>
@@ -166,13 +146,32 @@
                 </div>
               </div>
 
-              <!-- OFFENSE VS ALL ENEMIES -->
+              <div class="card">
+                <div class="card-head">
+                  <h3>Graph — utilité globale</h3>
+                  <div class="hint">Score visuel (0–100) : dégâts + fiabilité + survie.</div>
+                </div>
+                <div class="grid two">
+                  <div>
+                    <canvas id="main-utility-chart" width="520" height="260" class="canvas"></canvas>
+                    <div id="main-utility-score" class="row gap wrap mt12"></div>
+                  </div>
+                  <div>
+                    <div class="hint"><b>Comment lire</b></div>
+                    <ul class="bullets">
+                      <li><b>DPS</b> : expectedDamage, TTK.</li>
+                      <li><b>SURVIE</b> : TTD.</li>
+                      <li><b>FIABILITÉ</b> : hit moyen + faibles “0 dmg”.</li>
+                      <li><b>RISQUE</b> : trop de one-shot.</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
               <div class="card">
                 <div class="card-head">
                   <h3>Offense — ta classe attaque TOUS les ennemis</h3>
-                  <div class="hint">
-                    Important: si tu règles seulement contre 1 standard, tu peux rendre certains ennemis “gratuits” ou “impossibles”.
-                  </div>
+                  <div class="hint">Pour éviter les réglages “ok vs 1 cible” mais cassés ailleurs.</div>
                 </div>
 
                 <div id="main-off-summary" class="row gap wrap"></div>
@@ -194,14 +193,10 @@
                 </div>
               </div>
 
-              <!-- DEFENSE VS ALL ENEMIES -->
               <div class="card">
                 <div class="card-head">
                   <h3>Défense — tous les ennemis attaquent ta classe</h3>
-                  <div class="hint">
-                    Pourquoi: une classe peut être “forte” en dégâts mais mourir trop vite.
-                    <b>TTD</b> = combien de tours tu tiens (approx).
-                  </div>
+                  <div class="hint"><b>TTD</b> = combien de tours tu tiens (approx).</div>
                 </div>
 
                 <div id="main-def-summary" class="row gap wrap"></div>
@@ -223,11 +218,18 @@
                 </div>
               </div>
 
-              <!-- RECO -->
+              <div class="card">
+                <div class="card-head">
+                  <h3>Tous les indicateurs (pack complet)</h3>
+                  <div class="hint">Offense + Défense + variance</div>
+                </div>
+                <div id="main-all-indicators" class="grid three"></div>
+              </div>
+
               <div class="card">
                 <div class="card-head">
                   <h3>Recommandations</h3>
-                  <div class="hint">Actions simples, basées sur les pires cas.</div>
+                  <div class="hint">Actions simples basées sur les pires cas.</div>
                 </div>
                 <div id="main-recos" class="stack"></div>
               </div>
@@ -235,19 +237,14 @@
             </div>
           </div>
         </div>
-
       </div>
     </section>
 
-    <!-- GENERAL -->
     <section id="tab-general" class="tabpane">
       <div class="panel">
         <div class="panel-head">
           <h2>Général — comparaison de toutes les classes alliées</h2>
-          <div class="hint">
-            Objectif: repérer vite une classe <b>OP</b> ou <b>inutile</b>.
-            Les valeurs sont calculées contre <b>tous les ennemis</b>.
-          </div>
+          <div class="hint">Calcul contre <b>tous les ennemis</b>.</div>
         </div>
 
         <div id="general-summary" class="row gap wrap"></div>
@@ -264,6 +261,7 @@
                 <th>TTD moyen</th>
                 <th>0 dmg%</th>
                 <th>One-shot%</th>
+                <th>Utilité</th>
                 <th>Verdict</th>
               </tr>
             </thead>
@@ -271,27 +269,37 @@
           </table>
         </div>
 
-        <div class="callout mt12">
-          Comment lire:
-          <b>TTK</b> trop bas = tu tues trop vite (OP). Trop haut = tu ne tues jamais.
-          <b>TTD</b> trop bas = tu meurs trop vite (fragile).
+        <div class="hr"></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Graph — utilité globale (classe sélectionnée)</h3>
+            <div class="hint">Clique une ligne.</div>
+          </div>
+          <div class="grid two">
+            <div>
+              <canvas id="general-utility-chart" width="520" height="260" class="canvas"></canvas>
+              <div id="general-utility-score" class="row gap wrap mt12"></div>
+            </div>
+            <div>
+              <div id="general-selected" class="badge">Aucune classe sélectionnée.</div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- DUELS -->
     <section id="tab-duels" class="tabpane">
       <div class="panel">
         <div class="panel-head">
           <h2>Duels</h2>
-          <div class="hint">Choisis ton STANDARD ici (Défenseur). Sert de référence rapide.</div>
+          <div class="hint">Choisis ton STANDARD ici (Défenseur).</div>
         </div>
 
         <div class="grid two">
           <div class="card">
             <div class="card-head">
               <h3>Configuration</h3>
-              <div class="hint">Défenseur = référence (standard).</div>
             </div>
 
             <div class="form-grid">
@@ -326,7 +334,6 @@
       </div>
     </section>
 
-    <!-- DATA -->
     <section id="tab-data" class="tabpane">
       <div class="grid two">
         <div class="panel">
