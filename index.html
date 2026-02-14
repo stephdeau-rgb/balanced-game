@@ -3,334 +3,232 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FE-like Balance Lab (offline)</title>
-  <link rel="stylesheet" href="./style.css" />
+  <title>FE-like Balance Lab — V2.1 (Principal)</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!--
+  MINI DOC (usage rapide)
+  - 1) Onglet "Duels" : choisis un "Défenseur (STANDARD)" → toutes les jauges se basent dessus.
+  - 2) Onglet "Principal" : clique une classe alliée → ajuste sliders → lis les verdicts (OK/Warn/Fail).
+  - 3) Import/export : Onglet Données → JSON → Valider/Parser → Export jeu.
+  - 4) Lecture rapide :
+      - Hit = fiabilité (frustration si bas)
+      - Dégâts attendus = rythme réel
+      - TTK = tempo (2–3 conseillé sur standard)
+      - Survie = combien de tours tu encaisses (approx)
+  -->
+
   <header class="topbar">
     <div class="brand">
       <div class="logo">⚖️</div>
       <div>
         <div class="title">FE-like Balance Lab</div>
-        <div class="subtitle">Outil offline (statique) — édition + simulation + checklist + export JSON</div>
+        <div class="subtitle">Outil statique offline — écran principal “balance par classe”</div>
       </div>
     </div>
 
-    <nav class="tabs" id="tabs">
-      <button class="tab active" data-tab="data">Données</button>
-      <button class="tab" data-tab="duels">Duels (Micro)</button>
-      <button class="tab" data-tab="stage">Stage (Macro)</button>
-      <button class="tab" data-tab="checklist">Checklist / Validation</button>
-      <button class="tab" data-tab="tuning">Tuning</button>
-    </nav>
+    <div class="top-actions">
+      <label class="pill">
+        <input id="toggle-doubling" type="checkbox" />
+        <span>Doubling (SPD)</span>
+      </label>
+      <label class="pill">
+        <input id="toggle-crit" type="checkbox" />
+        <span>Crit</span>
+      </label>
+      <div class="sep"></div>
+      <div class="hint">
+        Fixe un <b>ennemi standard</b> dans <b>Duels</b> → sinon les indicateurs sont moins cohérents.
+      </div>
+    </div>
   </header>
 
   <main class="container">
+    <nav id="tabs" class="tabs">
+      <button class="tab active" data-tab="main">Principal</button>
+      <button class="tab" data-tab="data">Données</button>
+      <button class="tab" data-tab="duels">Duels</button>
+      <button class="tab" data-tab="stage">Stage</button>
+      <button class="tab" data-tab="checklist">Checklist</button>
+      <button class="tab" data-tab="tuning">Tuning</button>
+    </nav>
 
-    <!-- Mini doc -->
-    <section class="panel doc">
-      <h2>Utilisation rapide</h2>
-      <ul>
-        <li><b>Données</b> : édite le JSON interne dans la zone, puis clique <b>Valider / Parser</b>. Les formulaires sont une vue/édition “assistée”.</li>
-        <li><b>Référentiel</b> : dans <b>Duels</b>, choisis l’<b>ennemi standard</b> (défenseur). Les métriques/checklist se basent dessus.</li>
-        <li><b>Export</b> : <b>Copier</b> ou <b>Télécharger</b> le JSON “jeu” (format compatible projet).</li>
-        <li><b>Tuning</b> : applique des deltas globaux (mights armes, DEF/MDEF ennemis, HP stage) + toggle “doubling” (SPD).</li>
-        <li><b>Offline</b> : aucun backend, aucune dépendance externe. Tout est en mémoire (pense à exporter pour sauvegarder).</li>
-      </ul>
-    </section>
-
-    <!-- TAB: Données -->
-    <section class="panel tabpane active" id="tab-data">
-      <div class="grid two">
-        <div class="card">
-          <div class="card-header">
-            <h3>JSON interne (éditeur)</h3>
-            <div class="row gap">
-              <button id="btn-validate" class="btn primary">Valider / Parser</button>
-              <button id="btn-reset" class="btn">Réinitialiser (exemple)</button>
-            </div>
-          </div>
-          <textarea id="json-editor" class="textarea mono" spellcheck="false"></textarea>
-          <div class="hint" id="json-status"></div>
-
-          <div class="row gap wrap mt8">
-            <button id="btn-copy-editor" class="btn">Copier JSON (éditeur)</button>
-            <button id="btn-download-editor" class="btn">Télécharger JSON (éditeur)</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h3>Export JSON (format jeu)</h3>
-            <div class="row gap">
-              <button id="btn-copy-game" class="btn primary">Copier JSON (jeu)</button>
-              <button id="btn-download-game" class="btn">Télécharger JSON (jeu)</button>
-            </div>
-          </div>
-          <pre id="export-preview" class="pre mono"></pre>
-
-          <div class="card-header mt12">
-            <h3>Notes de design</h3>
-          </div>
-          <textarea id="design-notes" class="textarea" placeholder="Décisions d’équilibrage, TODO, hypothèses, etc."></textarea>
-          <div class="hint">Ces notes sont dans le JSON interne (champ <code>designNotes</code>).</div>
-        </div>
-      </div>
-
-      <div class="grid three mt12">
-        <div class="card">
-          <div class="card-header">
-            <h3>Classes</h3>
-            <button class="btn small" id="btn-add-class">+ Ajouter</button>
-          </div>
-          <div id="classes-form" class="stack"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h3>Armes</h3>
-            <button class="btn small" id="btn-add-weapon">+ Ajouter</button>
-          </div>
-          <div id="weapons-form" class="stack"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h3>Terrains</h3>
-            <button class="btn small" id="btn-add-terrain">+ Ajouter</button>
-          </div>
-          <div id="terrain-form" class="stack"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- TAB: Duels -->
-    <section class="panel tabpane" id="tab-duels">
-      <div class="grid two">
-        <div class="card">
-          <div class="card-header">
-            <h3>Choix duel</h3>
-          </div>
-
-          <div class="grid two">
-            <div>
-              <label class="label">Attaquant</label>
-              <select id="duel-attacker" class="input"></select>
-
-              <label class="label mt8">Terrain attaquant</label>
-              <select id="duel-attacker-terrain" class="input"></select>
-            </div>
-
-            <div>
-              <label class="label">Défenseur (ennemi standard)</label>
-              <select id="duel-defender" class="input"></select>
-
-              <label class="label mt8">Terrain défenseur</label>
-              <select id="duel-defender-terrain" class="input"></select>
-            </div>
-          </div>
-
-          <div class="row gap wrap mt12">
-            <label class="pill">
-              <input type="checkbox" id="toggle-doubling" />
-              Doubling (SPD)
-            </label>
-            <label class="pill">
-              <input type="checkbox" id="toggle-crit" />
-              Crit (optionnel)
-            </label>
-          </div>
-
-          <div class="hint mt8">
-            Le <b>défenseur</b> est le référentiel “ennemi standard” utilisé par la checklist et certaines métriques.
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h3>Résultats</h3>
-          </div>
-          <div id="duel-results" class="stack"></div>
-        </div>
-      </div>
-
-      <div class="card mt12">
-        <div class="card-header">
-          <h3>Comparatif : toutes classes vs ennemi standard</h3>
-          <div class="hint">On instancie chaque classe avec une arme “par défaut” (ou la première arme compatible), puis on calcule expectedDamage / TTK.</div>
-        </div>
-        <div class="tablewrap">
-          <table class="table" id="table-compare">
-            <thead>
-              <tr>
-                <th>Classe</th>
-                <th>Arme</th>
-                <th>Hit%</th>
-                <th>Dmg</th>
-                <th>Attaques</th>
-                <th>Exp.Dmg</th>
-                <th>TTK</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card mt12">
-        <div class="card-header">
-          <h3>Recommandations (auto)</h3>
-        </div>
-        <div id="micro-recos" class="stack"></div>
-      </div>
-    </section>
-
-    <!-- TAB: Stage -->
-    <section class="panel tabpane" id="tab-stage">
-      <div class="grid two">
-        <div class="card">
-          <div class="card-header">
-            <h3>Stage chargé</h3>
-            <div class="row gap">
-              <select id="stage-select" class="input"></select>
-              <button id="btn-stage-reload" class="btn">Recharger</button>
-            </div>
-          </div>
-
-          <div id="stage-summary" class="stack"></div>
-
-          <div class="card-header mt12">
-            <h3>Simulation macro (simple)</h3>
-          </div>
+    <!-- PRINCIPAL -->
+    <section id="tab-main" class="tabpane active">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Écran principal — Balance par classe alliée</h2>
           <div class="hint">
-            Pas de pathfinding : on estime les “danger zones” via distance Manhattan + range d’arme, puis on approx TTK moyen.
+            Objectif: <b>tu ajustes une classe</b> et tu vois instantanément si tu restes “dans les clous”
+            ou si tu <b>casses le jeu</b> (hit trop bas, dégâts 0, one-shot, combats trop longs…).
           </div>
-
-          <div class="row gap wrap mt8">
-            <label class="label">Rayon danger (cases)</label>
-            <input id="macro-radius" type="number" class="input" min="1" max="20" value="6" />
-            <button id="btn-macro-run" class="btn primary">Calculer</button>
-          </div>
-
-          <div id="macro-results" class="stack mt8"></div>
         </div>
 
-        <div class="card">
-          <div class="card-header">
-            <h3>Vue grille (indicative)</h3>
-            <div class="hint">Affichage minimal : terrains + positions unités (P/E). Pas un éditeur de map complet.</div>
+        <div class="grid two">
+          <!-- Liste classes alliées -->
+          <div class="card">
+            <div class="card-head">
+              <h3>Classes alliées (dans tes unités Player)</h3>
+              <div class="hint">Clique une classe pour régler ses stats.</div>
+            </div>
+            <div id="ally-class-list" class="list"></div>
+
+            <div class="callout mt12">
+              <b>Rappel:</b> le “Standard” vient de <b>Duels → Défenseur</b>.
+              Si tu ne l’as pas choisi, les verdicts sont moins utiles.
+            </div>
           </div>
-          <div id="stage-grid" class="gridview mono"></div>
+
+          <!-- Détails classe -->
+          <div class="card">
+            <div class="card-head">
+              <h3 id="main-class-title">Sélectionne une classe</h3>
+              <div class="hint">Sliders = paramètres réels (modifient le JSON de travail).</div>
+            </div>
+
+            <div id="main-class-empty" class="badge">Choisis une classe à gauche.</div>
+
+            <div id="main-class-panel" class="stack" style="display:none;">
+              <div class="grid two">
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Réglages</h3>
+                    <div class="hint">Stats de base + arme de référence.</div>
+                  </div>
+
+                  <div class="form-grid">
+                    <div>
+                      <label class="label">Arme de référence</label>
+                      <select id="main-weapon-select" class="input"></select>
+                      <div class="hint">Cette arme sert pour les indicateurs (Hit/Dmg/TTK).</div>
+                    </div>
+
+                    <div>
+                      <label class="label">Type de dégâts</label>
+                      <div id="main-dmg-type" class="badge">—</div>
+                      <div class="hint">Indique si ça tape sur DEF ou MDEF.</div>
+                    </div>
+                  </div>
+
+                  <div class="hr"></div>
+
+                  <div class="hint"><b>Base stats (sliders)</b></div>
+                  <div id="main-stats-sliders" class="stack mt8"></div>
+
+                  <div class="hr"></div>
+
+                  <div class="hint"><b>Arme (sliders)</b></div>
+                  <div id="main-weapon-sliders" class="stack mt8"></div>
+
+                  <div class="hint mt12">
+                    ⚠️ Si tu modifies l’arme ici, ça modifie l’arme globale (toutes unités qui l’utilisent).
+                    Si tu veux une arme dédiée à une seule unité, duplique-la dans l’onglet Données.
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Indicateurs (vs Standard)</h3>
+                    <div class="hint">OK/Warn/Fail + explications simples.</div>
+                  </div>
+
+                  <div id="main-indicators" class="stack"></div>
+
+                  <div class="hr"></div>
+
+                  <div class="card">
+                    <div class="card-head">
+                      <h3>Alertes “ça casse le jeu”</h3>
+                      <div class="hint">Les 4 problèmes les plus fréquents.</div>
+                    </div>
+                    <div id="main-break-alerts" class="stack"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <h3>Recommandations automatiques</h3>
+                  <div class="hint">Actions simples à faire (par ordre d’impact).</div>
+                </div>
+                <div id="main-recos" class="stack"></div>
+              </div>
+            </div>
+          </div>
         </div>
+
       </div>
     </section>
 
-    <!-- TAB: Checklist -->
-    <section class="panel tabpane" id="tab-checklist">
+    <!-- DONNÉES -->
+    <section id="tab-data" class="tabpane">
       <div class="grid two">
-        <div class="card">
-          <div class="card-header">
-            <h3>Checklist</h3>
-            <button id="btn-checklist-reset" class="btn">Reset défaut</button>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>JSON (éditeur)</h2>
+            <div class="row gap wrap">
+              <button class="btn" id="btn-validate">Valider / Parser</button>
+              <button class="btn ghost" id="btn-reset">Reset exemple</button>
+              <div class="sep"></div>
+              <button class="btn ghost" id="btn-copy-editor">Copier JSON</button>
+              <button class="btn ghost" id="btn-download-editor">Télécharger JSON</button>
+            </div>
           </div>
-          <div class="hint">Chaque item calcule une valeur mesurée à partir du référentiel (ennemi standard) et du set de classes.</div>
-          <div id="checklist-items" class="stack mt8"></div>
+
+          <div id="json-status" class="status"></div>
+          <textarea id="json-editor" class="textarea" spellcheck="false"></textarea>
+
+          <div class="panel-foot">
+            <div class="hint">
+              Tu peux tout importer ici. Les sliders du “Principal” et les formulaires modifient ce JSON de travail.
+            </div>
+          </div>
         </div>
 
-        <div class="card">
-          <div class="card-header">
-            <h3>Recommandations (global)</h3>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Édition rapide</h2>
+            <div class="row gap wrap">
+              <button class="btn small" id="btn-add-class">+ Classe</button>
+              <button class="btn small" id="btn-add-weapon">+ Arme</button>
+              <button class="btn small" id="btn-add-terrain">+ Terrain</button>
+            </div>
           </div>
-          <div id="global-recos" class="stack"></div>
 
-          <div class="card-header mt12">
-            <h3>JSON checklist (modifiable)</h3>
-          </div>
-          <textarea id="checklist-editor" class="textarea mono" spellcheck="false"></textarea>
-          <div class="row gap wrap mt8">
-            <button id="btn-checklist-apply" class="btn primary">Appliquer checklist</button>
-            <button id="btn-checklist-copy" class="btn">Copier</button>
-          </div>
-          <div class="hint" id="checklist-status"></div>
+          <details open class="accordion">
+            <summary>Classes</summary>
+            <div id="classes-form" class="stack"></div>
+          </details>
+
+          <details class="accordion">
+            <summary>Armes</summary>
+            <div id="weapons-form" class="stack"></div>
+          </details>
+
+          <details class="accordion">
+            <summary>Terrains</summary>
+            <div id="terrain-form" class="stack"></div>
+          </details>
+
+          <details class="accordion">
+            <summary>Notes de design</summary>
+            <textarea id="design-notes" class="textarea small" spellcheck="false"></textarea>
+          </details>
+
+          <details class="accordion">
+            <summary>Export (format jeu)</summary>
+
+            <div class="row gap wrap">
+              <button class="btn" id="btn-copy-game">Copier export jeu</button>
+              <button class="btn ghost" id="btn-download-game">Télécharger export jeu</button>
+            </div>
+
+            <pre id="export-preview" class="pre"></pre>
+          </details>
         </div>
       </div>
     </section>
 
-    <!-- TAB: Tuning -->
-    <section class="panel tabpane" id="tab-tuning">
-      <div class="grid two">
-        <div class="card">
-          <div class="card-header">
-            <h3>Sliders globaux</h3>
-          </div>
-
-          <div class="field">
-            <label class="label">Δ Might sur armes (filtre type)</label>
-            <div class="row gap">
-              <select id="tuning-weapon-type" class="input">
-                <option value="all">Toutes</option>
-                <option value="physical">Physical</option>
-                <option value="magic">Magic</option>
-                <option value="heal">Heal</option>
-              </select>
-              <input id="tuning-might" type="range" min="-3" max="3" value="0" />
-              <div class="kbd" id="tuning-might-val">0</div>
-            </div>
-          </div>
-
-          <div class="field">
-            <label class="label">Δ DEF/MDEF sur ennemis (filtre classe)</label>
-            <div class="row gap">
-              <select id="tuning-enemy-class" class="input"></select>
-              <input id="tuning-def" type="range" min="-3" max="3" value="0" />
-              <div class="kbd" id="tuning-def-val">0</div>
-              <input id="tuning-mdef" type="range" min="-3" max="3" value="0" />
-              <div class="kbd" id="tuning-mdef-val">0</div>
-            </div>
-          </div>
-
-          <div class="field">
-            <label class="label">Δ HP global stage (unités du stage sélectionné)</label>
-            <div class="row gap">
-              <input id="tuning-hp" type="range" min="-5" max="10" value="0" />
-              <div class="kbd" id="tuning-hp-val">0</div>
-            </div>
-          </div>
-
-          <div class="row gap wrap mt12">
-            <label class="pill">
-              <input type="checkbox" id="tuning-toggle-doubling" />
-              Doubling (SPD) global
-            </label>
-            <label class="pill">
-              <input type="checkbox" id="tuning-toggle-crit" />
-              Crit global (optionnel)
-            </label>
-          </div>
-
-          <div class="row gap wrap mt12">
-            <button id="btn-tuning-apply" class="btn primary">Appliquer</button>
-            <button id="btn-tuning-reset" class="btn">Reset sliders</button>
-          </div>
-
-          <div class="hint mt8">Les deltas modifient directement le JSON interne (pense à exporter).</div>
-        </div>
-
-        <div class="card">
-          <div class="card-header">
-            <h3>Log changements</h3>
-          </div>
-          <pre id="tuning-log" class="pre mono"></pre>
-        </div>
-      </div>
-    </section>
-
-  </main>
-
-  <footer class="footer">
-    <div class="hint">FE-like Balance Lab — Vanilla HTML/CSS/JS — Offline</div>
-  </footer>
-
-  <script src="./app.js"></script>
-</body>
-</html>
+    <!-- DUELS -->
+   
